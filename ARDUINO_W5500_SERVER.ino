@@ -18,12 +18,11 @@
 // MAC-адрес (можно оставить как есть или изменить)
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
 
-// IP адрес (для подключения к роутеру)
-// Роутер: 192.168.1.1, Arduino: 192.168.1.140 (если DHCP не сработает)
+// IP адрес (ИЗМЕНИТЕ НА ВАШ IP!)
 IPAddress ip(192, 168, 1, 140);
 
-// Порт сервера (создадим после инициализации Ethernet)
-EthernetServer* server = nullptr;
+// Порт сервера
+EthernetServer server(80);
 
 // Состояние системы
 bool systemOn = false;
@@ -34,12 +33,6 @@ bool manualMode = false;
 float temperature = 22.5;
 float humidity = 45.0;
 float pressure = 1013.25;
-
-// Прототипы функций
-void sendJsonStatus(EthernetClient &client);
-void sendJsonSensors(EthernetClient &client);
-void handleControlCommand(EthernetClient &client, String request);
-void sendWebInterface(EthernetClient &client);
 
 void setup() {
   Serial.begin(9600);
@@ -57,201 +50,62 @@ void setup() {
   
   // Инициализация пинов W5500
   Serial.println(F("1. Инициализация пинов..."));
-  
-  // CS пин должен быть HIGH (неактивен) до инициализации SPI
-  pinMode(10, OUTPUT);
+  pinMode(10, OUTPUT);  // CS пин
   digitalWrite(10, HIGH);
-  Serial.println(F("   CS пин (10): HIGH"));
-  
-  // Reset пин - делаем жесткий сброс
-  pinMode(9, OUTPUT);
-  Serial.println(F("   Reset пин (9): выполняю сброс..."));
+  pinMode(9, OUTPUT);   // Reset пин (если подключен)
   digitalWrite(9, LOW);
-  delay(200);  // Увеличил задержку для надежного сброса
+  delay(100);
   digitalWrite(9, HIGH);
-  delay(500);  // Увеличил задержку после сброса
+  delay(100);
   Serial.println(F("   ✓ Пины инициализированы"));
   
   // Инициализация SPI
   Serial.println(F("2. Инициализация SPI..."));
   SPI.begin();
-  Serial.println(F("   SPI.begin() выполнен"));
-  Serial.println(F("   MOSI: Pin 11"));
-  Serial.println(F("   MISO: Pin 12"));
-  Serial.println(F("   SCK:  Pin 13"));
   Serial.println(F("   ✓ SPI инициализирован"));
   
   // Инициализация Ethernet
   Serial.println(F("3. Инициализация Ethernet..."));
-  Serial.flush(); // Убеждаемся, что все выведено
-  
-  Serial.print(F("   Шаг 3.1: Вывод MAC адреса..."));
-  Serial.flush();
-  
   Serial.print(F("   MAC: "));
   for (int i = 0; i < 6; i++) {
     if (mac[i] < 0x10) Serial.print("0");
     Serial.print(mac[i], HEX);
     if (i < 5) Serial.print(":");
-    Serial.flush(); // Выводим после каждого байта
   }
   Serial.println();
-  Serial.flush();
   
-  Serial.println(F("   Шаг 3.2: MAC адрес выведен"));
-  Serial.flush();
+  Serial.println(F("   Пытаемся получить IP через DHCP..."));
+  Serial.println(F("   (таймаут 15 секунд)"));
   
-  Serial.println(F("   Сначала пробуем DHCP (получить IP от роутера)..."));
+  unsigned long startTime = millis();
+  byte result = Ethernet.begin(mac, 15000); // Таймаут 15 секунд
+  unsigned long elapsed = millis() - startTime;
   
-  IPAddress gateway(192, 168, 1, 1);    // Шлюз (роутер)
-  IPAddress subnet(255, 255, 255, 0);   // Маска подсети для 192.168.1.x
-  
-  Serial.print(F("   Настройка IP: "));
-  Serial.print(ip);
-  Serial.print(F(" / "));
-  Serial.print(subnet);
-  Serial.print(F(" (шлюз: "));
-  Serial.print(gateway);
-  Serial.println(F(")"));
-  
-  Serial.println(F("   Вызываю Ethernet.begin()..."));
-  Serial.println(F("   (это может занять несколько секунд)"));
-  
-  // Мигаем LED во время инициализации, чтобы видеть, что код работает
-  bool ledState = false;
-  
-  // Пытаемся инициализировать с таймаутом
-  // Ethernet.begin() может зависнуть, если W5500 не отвечает
-  Serial.print(F("   ["));
-  for (int i = 0; i < 10; i++) {
-    Serial.print(F("."));
-    delay(100);
-    ledState = !ledState;
-    digitalWrite(13, ledState);
-  }
-  Serial.println(F("]"));
-  
-  // Явно инициализируем CS пин для Ethernet2
-  Serial.println(F("   Инициализирую CS пин (10)..."));
-  Ethernet.init(10);  // Явно указываем CS пин
-  delay(100);
-  
-  // Дополнительный сброс после init
-  Serial.println(F("   Дополнительный сброс W5500..."));
-  pinMode(9, OUTPUT);
-  digitalWrite(9, LOW);
-  delay(100);
-  digitalWrite(9, HIGH);
-  delay(500);
-  
-  // Теперь вызываем Ethernet.begin()
-  Serial.println(F("   Начинаю инициализацию W5500..."));
-  digitalWrite(13, HIGH); // Индикация начала
-  
-  // Сначала пробуем DHCP
-  Serial.println(F("   Попытка 1: DHCP (получить IP от роутера)..."));
-  Serial.println(F("   (ожидание до 15 секунд...)"));
-  unsigned long dhcpStart = millis();
-  Ethernet.begin(mac); // Пробуем получить IP через DHCP
-  delay(2000);
-  unsigned long dhcpTime = millis() - dhcpStart;
-  
-  IPAddress testIP = Ethernet.localIP();
-  bool success = false;
-  
-  // Проверяем, получили ли мы IP через DHCP
-  if ((testIP[0] != 0 || testIP[1] != 0 || testIP[2] != 0 || testIP[3] != 0) &&
-      (testIP[0] != 255 || testIP[1] != 255 || testIP[2] != 255 || testIP[3] != 255) &&
-      testIP[0] == 192 && testIP[1] == 168) { // Проверяем, что IP в правильной подсети
-    Serial.print(F("   ✓ DHCP успешен! (время: "));
-    Serial.print(dhcpTime);
-    Serial.print(F(" мс) IP от роутера: "));
-    Serial.print(testIP[0]); Serial.print(F("."));
-    Serial.print(testIP[1]); Serial.print(F("."));
-    Serial.print(testIP[2]); Serial.print(F("."));
-    Serial.println(testIP[3]);
-    success = true;
-  } else {
-    Serial.println(F("   ⚠ DHCP не удался, используем статический IP..."));
+  if (result == 0) {
+    Serial.print(F("   ⚠ DHCP не удался (время: "));
+    Serial.print(elapsed);
+    Serial.println(F(" мс)"));
+    Serial.println(F("   Пробуем статический IP..."));
     
-    // Пробуем статический IP несколько раз
-    for (int attempt = 1; attempt <= 3; attempt++) {
-      Serial.print(F("   Попытка "));
-      Serial.print(attempt + 1);
-      Serial.println(F(": Статический IP..."));
-      
-      Ethernet.begin(mac, ip, gateway, subnet);
-      delay(2000);
-      
-      testIP = Ethernet.localIP();
-      if ((testIP[0] != 0 || testIP[1] != 0 || testIP[2] != 0 || testIP[3] != 0) &&
-          (testIP[0] != 255 || testIP[1] != 255 || testIP[2] != 255 || testIP[3] != 255)) {
-        Serial.print(F("   ✓ Статический IP установлен: "));
-        Serial.print(testIP[0]); Serial.print(F("."));
-        Serial.print(testIP[1]); Serial.print(F("."));
-        Serial.print(testIP[2]); Serial.print(F("."));
-        Serial.println(testIP[3]);
-        success = true;
-        break;
-      } else {
-        Serial.println(F("   ⚠ Не удалось, пробую еще раз..."));
-        // Дополнительный сброс
-        digitalWrite(9, LOW);
-        delay(100);
-        digitalWrite(9, HIGH);
-        delay(500);
-      }
-    }
+    IPAddress gateway(192, 168, 1, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    Ethernet.begin(mac, ip, gateway, subnet);
+    
+    Serial.print(F("   Статический IP: "));
+    Serial.println(Ethernet.localIP());
+  } else {
+    Serial.print(F("   ✓ DHCP успешен! (время: "));
+    Serial.print(elapsed);
+    Serial.print(F(" мс)"));
+    Serial.print(F(" IP: "));
+    Serial.println(Ethernet.localIP());
   }
   
-  digitalWrite(13, LOW);
-  Serial.println(F("   Ethernet.begin() завершен"));
-  
-  delay(1000);
-  
-  // Читаем IP адрес несколько раз для надежности
+  // Проверка IP адреса
   IPAddress localIP = Ethernet.localIP();
-  delay(100);
-  localIP = Ethernet.localIP(); // Читаем еще раз
-  
-  Serial.print(F("   Установленный IP: "));
-  Serial.print(localIP[0]);
-  Serial.print(F("."));
-  Serial.print(localIP[1]);
-  Serial.print(F("."));
-  Serial.print(localIP[2]);
-  Serial.print(F("."));
-  Serial.println(localIP[3]);
-  
-  // Дополнительная диагностика
-  IPAddress dnsIP = Ethernet.dnsServerIP();
-  IPAddress gwIP = Ethernet.gatewayIP();
-  IPAddress subIP = Ethernet.subnetMask();
-  
-  Serial.print(F("   DNS: "));
-  Serial.print(dnsIP[0]); Serial.print(F("."));
-  Serial.print(dnsIP[1]); Serial.print(F("."));
-  Serial.print(dnsIP[2]); Serial.print(F("."));
-  Serial.println(dnsIP[3]);
-  
-  Serial.print(F("   Gateway: "));
-  Serial.print(gwIP[0]); Serial.print(F("."));
-  Serial.print(gwIP[1]); Serial.print(F("."));
-  Serial.print(gwIP[2]); Serial.print(F("."));
-  Serial.println(gwIP[3]);
-  
-  Serial.print(F("   Subnet: "));
-  Serial.print(subIP[0]); Serial.print(F("."));
-  Serial.print(subIP[1]); Serial.print(F("."));
-  Serial.print(subIP[2]); Serial.print(F("."));
-  Serial.println(subIP[3]);
-  
-  // Проверка IP адреса (0.0.0.0 или 255.255.255.255 означает ошибку)
-  if ((localIP[0] == 0 && localIP[1] == 0 && localIP[2] == 0 && localIP[3] == 0) ||
-      (localIP[0] == 255 && localIP[1] == 255 && localIP[2] == 255 && localIP[3] == 255)) {
-    Serial.print(F("\n   ❌ ОШИБКА: IP адрес = "));
-    Serial.println(localIP);
-    Serial.println(F("   W5500 не отвечает через SPI!"));
+  if (localIP[0] == 0 && localIP[1] == 0 && localIP[2] == 0 && localIP[3] == 0) {
+    Serial.println(F("\n   ❌ ОШИБКА: IP адрес = 0.0.0.0"));
+    Serial.println(F("   W5500 не отвечает!"));
     Serial.println(F("\n   Проверьте:"));
     Serial.println(F("   - Подключение пинов (VCC, GND, MOSI, MISO, SCK, CS, Reset)"));
     Serial.println(F("   - Питание (5V или 3.3V)"));
@@ -271,16 +125,10 @@ void setup() {
   delay(1000);
   
   Serial.println(F("\n4. Запуск сервера..."));
-  // Создаем сервер только после успешной инициализации Ethernet
-  server = new EthernetServer(80);
-  server->begin();
+  server.begin();
   
-  IPAddress serverIP = Ethernet.localIP();
   Serial.print(F("   ✓ Сервер запущен на IP: "));
-  Serial.print(serverIP[0]); Serial.print(F("."));
-  Serial.print(serverIP[1]); Serial.print(F("."));
-  Serial.print(serverIP[2]); Serial.print(F("."));
-  Serial.println(serverIP[3]);
+  Serial.println(Ethernet.localIP());
   Serial.println(F("   ✓ Порт: 80"));
   
   Serial.println(F("\n5. API endpoints:"));
@@ -299,12 +147,9 @@ void setup() {
     delay(200);
   }
   
-  IPAddress finalIP = Ethernet.localIP();
   Serial.println(F("\nОткройте в браузере: http://"));
-  Serial.print(finalIP[0]); Serial.print(F("."));
-  Serial.print(finalIP[1]); Serial.print(F("."));
-  Serial.print(finalIP[2]); Serial.print(F("."));
-  Serial.println(finalIP[3]);
+  Serial.print(Ethernet.localIP());
+  Serial.println(F("\n"));
 }
 
 void loop() {
@@ -323,8 +168,7 @@ void loop() {
   }
   
   // Проверяем подключение клиента
-  if (server == nullptr) return; // Сервер не инициализирован
-  EthernetClient client = server->available();
+  EthernetClient client = server.available();
   if (client) {
     Serial.println(F("Client connected!"));
     digitalWrite(13, HIGH);
@@ -506,3 +350,4 @@ void sendWebInterface(EthernetClient &client) {
   client.println(F("<p><a href='/'>Обновить</a></p>"));
   client.println(F("</body></html>"));
 }
+
